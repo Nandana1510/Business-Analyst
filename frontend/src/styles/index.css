@@ -1,0 +1,7 @@
+/**
+ * Application style entry — G10X design system + Business Analyst layout.
+ * Canonical tokens/components live in theme.css (aligned with G10X theme.css).
+ */
+@import './theme.css';
+@import './ba-layout.css';
+@import './ba-artifacts.css';
