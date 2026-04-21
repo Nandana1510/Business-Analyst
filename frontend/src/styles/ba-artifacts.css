@@ -1,0 +1,183 @@
+/**
+ * Artifact panels — lists, nested features, typography on top of .card from theme.
+ */
+
+.ba-artifacts h3 {
+  margin-top: var(--s-24);
+}
+
+.ba-artifacts h3:first-child {
+  margin-top: 0;
+}
+
+.ba-artifacts .ba-feature-block {
+  margin-bottom: var(--s-28);
+  padding-bottom: var(--s-20);
+  border-bottom: 1px solid rgba(207, 197, 183, 0.45);
+}
+
+.ba-artifacts .ba-feature-block:last-child {
+  border-bottom: none;
+  margin-bottom: 0;
+  padding-bottom: 0;
+}
+
+.ba-artifacts .ba-story {
+  margin-bottom: var(--s-20);
+  padding-bottom: var(--s-16);
+  border-bottom: 1px solid rgba(207, 197, 183, 0.35);
+}
+
+.ba-artifacts .ba-story:last-child {
+  border-bottom: none;
+}
+
+.ba-artifacts .ba-story h4 {
+  font-family: var(--g10x-font-primary);
+  font-size: 1rem;
+  font-weight: var(--g10x-weight-bold);
+  color: var(--g10x-grey-900);
+  margin: 0 0 var(--s-8);
+}
+
+.ba-artifacts .ba-ref {
+  margin-left: var(--s-8);
+  font-size: 0.8rem;
+  color: var(--g10x-brand-red);
+  font-weight: var(--g10x-weight-bold);
+}
+
+.ba-artifacts ul,
+.ba-artifacts ol {
+  padding-left: var(--s-24);
+  margin: var(--s-8) 0;
+}
+
+.ba-artifacts .ba-ac-pre {
+  margin: var(--s-8) 0 0;
+  font-size: 0.85rem;
+}
+
+.ba-artifacts .ba-ac-heading {
+  font-family: var(--g10x-font-primary);
+  font-size: 0.8rem;
+  font-weight: var(--g10x-weight-bold);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--g10x-grey-900);
+  opacity: 0.75;
+  margin: var(--s-16) 0 var(--s-8);
+}
+
+.ba-features-section .ba-product-callout {
+  margin-bottom: var(--s-12);
+}
+
+.ba-features-section .ba-product-caption {
+  margin-bottom: var(--s-20);
+}
+
+.ba-feature-heading {
+  font-family: var(--g10x-font-primary);
+  font-size: var(--g10x-text-subhead-size);
+  font-weight: var(--g10x-weight-bold);
+  color: var(--g10x-brand-red);
+  margin: var(--s-28) 0 var(--s-12);
+  padding-bottom: var(--s-8);
+  border-bottom: 1px solid rgba(207, 197, 183, 0.55);
+}
+
+.ba-feature-block:first-of-type .ba-feature-heading {
+  margin-top: var(--s-8);
+}
+
+.ba-feature-summary {
+  margin-bottom: var(--s-16);
+  line-height: 1.5;
+}
+
+.ba-epic-embedded {
+  margin: var(--s-16) 0 var(--s-20);
+  padding: var(--s-16) var(--s-20);
+  background: var(--g10x-light-grey);
+  border: 1px solid rgba(207, 197, 183, 0.55);
+  border-radius: var(--g10x-radius-md);
+}
+
+.ba-epic-embedded h3 {
+  margin-top: 0;
+  font-size: 1rem;
+  color: var(--g10x-grey-900);
+}
+
+.ba-expander {
+  margin-bottom: var(--s-12);
+  border: 1px solid rgba(207, 197, 183, 0.55);
+  border-radius: var(--g10x-radius-md);
+  padding: var(--s-8) var(--s-16);
+  background: var(--g10x-white);
+}
+
+.ba-expander summary {
+  cursor: pointer;
+  font-weight: var(--g10x-weight-bold);
+  font-family: var(--g10x-font-primary);
+  color: var(--g10x-brand-red);
+  padding: var(--s-4) 0;
+}
+
+.ba-journey-ol,
+.ba-gap-ul {
+  margin: var(--s-12) 0 var(--s-4);
+  padding-left: var(--s-24);
+}
+
+.ba-gap-ul li {
+  margin-bottom: var(--s-8);
+}
+
+.ba-stories-subheading {
+  font-family: var(--g10x-font-primary);
+  font-size: 1rem;
+  font-weight: var(--g10x-weight-bold);
+  margin: var(--s-24) 0 var(--s-4);
+  color: var(--g10x-grey-900);
+}
+
+.ba-stories-caption {
+  margin-bottom: var(--s-16);
+}
+
+.ba-stories-under-expander {
+  margin-top: var(--s-8);
+}
+
+.ba-stories-under-expander .ba-story:first-child {
+  margin-top: 0;
+  padding-top: 0;
+}
+
+.ba-collapsible-body {
+  margin-top: var(--s-8);
+}
+
+.ba-collapsible-body > .hint-muted:first-child {
+  margin-top: 0;
+}
+
+.ba-artifact-collapsible-card > .ba-expander {
+  margin-top: 0;
+}
+
+.ba-epic-under-expander {
+  margin-top: var(--s-12);
+}
+
+.ba-product-meta-expander,
+.ba-section-guide-expander {
+  margin-bottom: var(--s-16);
+}
+
+.ba-section-guide-expander .ba-features-lead {
+  margin: var(--s-8) 0 0;
+}

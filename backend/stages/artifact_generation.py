@@ -1025,12 +1025,14 @@ def generate_all_artifacts(
 
     if level in ("feature", "enhancement"):
         stories = generate_user_stories(refined, ac_fmt, epic_context=None)
+        user_journey = generate_user_journey(refined, post_features_context=None)
+        gap_analysis = generate_gap_analysis(refined, post_features_context=None)
         return {
             "epic": None,
             "features": [],
             "user_stories": [s.to_dict() for s in stories],
-            "user_journey": [],
-            "gap_analysis": [],
+            "user_journey": user_journey,
+            "gap_analysis": gap_analysis,
             "bug_report": None,
         }
 
@@ -1070,12 +1072,14 @@ def generate_all_artifacts(
         }
 
     stories = generate_user_stories(refined, ac_fmt, epic_context=None)
+    user_journey = generate_user_journey(refined, post_features_context=None)
+    gap_analysis = generate_gap_analysis(refined, post_features_context=None)
     return {
         "epic": None,
         "features": [],
         "user_stories": [s.to_dict() for s in stories],
-        "user_journey": [],
-        "gap_analysis": [],
+        "user_journey": user_journey,
+        "gap_analysis": gap_analysis,
         "bug_report": None,
     }
 
