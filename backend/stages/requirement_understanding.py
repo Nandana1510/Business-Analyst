@@ -82,7 +82,7 @@ EXTRACTION_PROMPT = """You are a business analyst. Extract structured informatio
 Requirement text:
 ---
 {requirement_text}
----
+---{supplementary_block}
 
 **Literal fidelity:** Preserve distinctive specifics from the text in action, domain, and impact where they carry requirements meaning (exact feature names, UI labels, themes such as "black theme", modules, systems). Prefer the source's wording over vaguer synonyms; do not generalize concrete values the user stated.
 
@@ -94,7 +94,7 @@ Requirement text:
 - Do **not** assign **User** as primary actor just because end users benefit from recommendations or alerts; the **System** still runs the logic unless the user is explicitly the one performing the checks.
 - For normal end-user flows (search, pay, subscribe), **actor** remains **User** (or Admin, etc.) and **secondary_actor** is **""**.
 
-**Impact (grounded but useful):** List **specific** applications, data areas, or capabilities that are **explicitly named** OR **clearly implied** by the requirement. Use **short, business-meaningful labels** (2–4 words). You do **not** need to list every possible system—the pipeline will **merge** your list with domain/action-aware hints, so prefer **high-confidence** items only; **maximum 5** in the final output after merge.
+**Impact / impacted systems (mandatory quality):** Each entry must read as a **named application or service boundary** a BA would put on a context diagram—use **Title Case** names like **Task Management System**, **Notification Service**, **Assignment Service**, **Order Management System**, **Payment Gateway**, **Customer Account Service**—grounded in the requirement’s **named** products, modules, or integrations, or a **clear implication** from the user’s domain (same vocabulary as the text). **Do NOT** output vague buckets such as **"Core platform"**, **"Backend"**, **"The application"**, **"Data layer"**, **"Infrastructure"**, **"Module"**, or single-word fluff (**"System"**, **"App"**) unless the source text used that exact term as a proper name. Prefer **2–5 words**; when inferring a component not explicitly named, use a **concrete** label such as **… Management System**, **… Service**, or **… Platform** that fits the domain—**not** a vague single word. **maximum 5** items; **high-confidence** only—the pipeline may merge near-duplicates. **These lines are integration / dependency context for the primary capability**—**not** a prompt to invent separate product features or user stories per line unless the user explicitly scoped a distinct capability per system.
 
 **Single product context (mandatory):** Treat the text as **one** product or initiative unless the user clearly switches to a different product. **domain**, **action**, and **impact** must all read as the **same** problem space (e.g. meal delivery → delivery, orders, meals—**not** unrelated industries mixed in). Prefer **one consolidated label** over several near-duplicates (e.g. avoid listing both "Subscription" and "Subscription billing" separately—use **one** label such as **Subscription & billing** when both mean the same billing relationship).
 
@@ -571,7 +571,24 @@ def understand_requirement(raw: RawRequirement) -> UnderstoodRequirement:
     Use an LLM to extract structured fields from raw requirement text.
     Provider selection and failover match :func:`call_llm` (see env keys in ``.env.example``).
     """
-    prompt = EXTRACTION_PROMPT.format(requirement_text=raw.text)
+    supp = (getattr(raw, "supplementary_constraints", None) or "").strip()
+    if supp:
+        supplementary_block = (
+            "\n\n**Supplementary constraints (from gap analysis — NOT separate product features):**\n"
+            f"{supp}\n\n"
+            "**How to use this block:** Treat it as **constraints, rules, edge cases, or clarifications** "
+            "on the **primary** requirement above. Reflect it in **action**, **domain**, and **impact** "
+            "where it tightens or extends that scope. **Do not** invent unrelated capabilities, new primary "
+            "actors, or separate product domains for each bullet. **Do not** treat each line as its own "
+            "independent feature unless a line **explicitly** describes a distinct user-facing capability "
+            "outside the primary requirement.\n"
+        )
+    else:
+        supplementary_block = ""
+    prompt = EXTRACTION_PROMPT.format(
+        requirement_text=raw.text,
+        supplementary_block=supplementary_block,
+    )
     with agent_log("Requirement Understanding"):
         content = call_llm(prompt)
         if not content:

@@ -10,6 +10,22 @@ export type ClarificationState = {
   stage2_notes: string[] | null
 }
 
+/** One submitted clarification stage (API `clarification_log`). */
+export type ClarificationLogItem = {
+  category: string
+  question: string
+  answer: string
+}
+
+export type ClarificationLogRound = {
+  stage: number
+  feature_index: number | null
+  feature_total: number | null
+  feature_label: string
+  items: ClarificationLogItem[]
+  note?: string
+}
+
 export type MultiFeatureProgress = {
   active: boolean
   feature_index: number
@@ -35,6 +51,8 @@ export type ArtifactsPayload = {
   user_stories: unknown[]
   user_journey: string[]
   gap_analysis: string[]
+  /** Some payloads may use camelCase for the same list. */
+  gapAnalysis?: string[]
   bug_report: Record<string, unknown> | null
 }
 
@@ -48,6 +66,7 @@ export type PipelineState = {
   multi_feature_results: FeatureBundle[] | null
   understood: Record<string, unknown> | null
   clarification: ClarificationState | null
+  clarification_log: ClarificationLogRound[]
   needs_continue_empty_clarification: boolean
   refined_text: string | null
   refined: Record<string, unknown> | null

@@ -1,9 +1,18 @@
 """
 Phase 2: Clarification mechanism (two-stage adaptive)
 
-Stage 1: 4–5 base questions (business rules, user flow, constraints, assumptions).
+Stage 1: 4–5 base questions (business rules, user flow, constraints, assumptions), optionally
+plus one **hierarchy / granularity** question when backlog shape materially affects artifacts (Epic-style
+program hierarchy vs flat feature / user stories vs keep intake). Not counted toward the Stage 2 cap.
 Stage 2: optional follow-up when consistency, required-field gaps, or clarity eval
 say more detail is needed. Total questions capped at ``CLARIFICATION_MAX_TOTAL_QUESTIONS``.
+
+**Hierarchy question gating** (see ``assess_need_for_granularity_clarification``): **never** for **bug**;
+**product** when multiple capabilities are detected; **sprint** when multi-capability or (time-box bundle
+gray-zone LLM); **enhancement** only with multiple capability areas; **feature** only when multiple
+capabilities suggest hierarchy matters—skip obvious tiny single-feature scopes. **2–3 intake slices** still
+run the LLM gate (umbrella epic vs separate deliverables). Intake supplementary text still counts
+toward multi-capability. Does **not** count toward the Stage 2 cap (see ``merge_stage1_questions_with_optional_granularity``).
 """
 
 from __future__ import annotations
@@ -11,7 +20,9 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, field
+from typing import Any
 
+from stages.requirement_intake import normalize_requirement_level, parse_explicit_capability_labels
 from stages.requirement_understanding import UnderstoodRequirement, call_llm
 from stages.pipeline_logging import agent_log
 
@@ -31,6 +42,179 @@ DEFAULT_SUGGESTED_OPTIONS = [
 CLARIFICATION_MAX_TOTAL_QUESTIONS = 10
 CLARIFICATION_STAGE1_TARGET_MIN = 4
 CLARIFICATION_STAGE1_TARGET_MAX = 5
+
+# Reserved Stage-1 category: optional granularity (not counted against Stage 2 budget).
+REQUIREMENT_GRANULARITY_CATEGORY = "requirement_granularity_scope"
+GRANULARITY_OPTION_USE_INTAKE = "Use intake classification (automation default)"
+GRANULARITY_OPTION_EPIC = "Treat as Epic-level (product-style backlog)"
+GRANULARITY_OPTION_FEATURE = "Treat as Feature-level (single capability slice)"
+REQUIREMENT_GRANULARITY_QUESTION_TEXT = (
+    "Backlog hierarchy: keep the intake default, or structure outputs as a program-level Epic with "
+    "grouped capability buckets vs a single feature / flat user stories?"
+)
+
+_PRODUCT_LEVEL_INTENT_RES = [
+    re.compile(r"\bbuild\s+(?:a|an)\s+system\b", re.I),
+    re.compile(r"\bcreate\s+(?:a|an)\s+app\b", re.I),
+    re.compile(r"\bdevelop\s+(?:a|an)\s+platform\b", re.I),
+    re.compile(r"\bbuild\s+(?:a|an)\s+platform\b", re.I),
+    re.compile(r"\bdevelop\s+(?:a|an)\s+application\b", re.I),
+    re.compile(r"\bbuild\s+(?:a|an)\s+application\b", re.I),
+    re.compile(r"\bdevelop\s+(?:a|an)\s+app\b", re.I),
+    re.compile(r"\bcreate\s+(?:a|an)\s+platform\b", re.I),
+]
+
+
+_TIMEBOX_OR_BUNDLE_LANG_RES = [
+    re.compile(r"\bthis\s+sprint\b", re.I),
+    re.compile(r"\bnext\s+sprint\b", re.I),
+    re.compile(r"\blast\s+sprint\b", re.I),
+    re.compile(r"\bthis\s+release\b", re.I),
+    re.compile(r"\bnext\s+release\b", re.I),
+    re.compile(r"\bthis\s+iteration\b", re.I),
+    re.compile(r"\bnext\s+iteration\b", re.I),
+    re.compile(r"\btime[- ]?box", re.I),
+]
+
+
+def detect_timeboxed_bundle_language(raw_requirement_text: str) -> bool:
+    """True when text reads like a sprint/release bundle (several items in one time box)."""
+    t = (raw_requirement_text or "").strip()
+    if not t:
+        return False
+    return any(rx.search(t) for rx in _TIMEBOX_OR_BUNDLE_LANG_RES)
+
+
+def detect_product_level_intent(raw_requirement_text: str) -> bool:
+    """
+    True when wording suggests a program / product build framing (not only a single tweak).
+    Used with 2–3 intake slices to re-open the granularity gate despite confident intake labels.
+    """
+    t = (raw_requirement_text or "").strip()
+    if not t:
+        return False
+    return any(rx.search(t) for rx in _PRODUCT_LEVEL_INTENT_RES)
+
+
+def _hierarchy_combined_text(
+    raw_requirement_text: str,
+    product_intent_source_text: str | None,
+    intake_supplementary_constraints: str | None,
+) -> str:
+    """Merge sources for multi-capability detection (include intake bucket lists)."""
+    parts: list[str] = []
+    for blob in (product_intent_source_text, raw_requirement_text, intake_supplementary_constraints):
+        s = (blob or "").strip()
+        if s and s not in parts:
+            parts.append(s)
+    return "\n\n".join(parts)
+
+
+def _intake_bucket_bullet_count(text: str) -> int:
+    """Count `-` bucket lines (e.g. named capability areas from product intake supplementary lists)."""
+    lines = [ln.strip() for ln in (text or "").splitlines() if ln.strip().startswith("- ")]
+    if len(lines) < 2:
+        return 0
+    if not all(len(ln) < 160 for ln in lines):
+        return 0
+    return len(lines)
+
+
+def _prose_multi_capability_hint(text: str) -> bool:
+    """Heuristic when strict comma-list parsing misses clear parallel capabilities."""
+    t = (text or "").strip()
+    if not t:
+        return False
+    low = t.lower()
+    if " with " in low:
+        _, _, tail = t.partition(" with ")
+        tail = tail.strip()
+        if tail.count(",") >= 2:
+            return True
+        if tail.count(",") >= 1 and re.search(r"\band\b", low):
+            return True
+    if re.search(r"\b(including|such\s+as|e\.g\.|eg\.)\b", low) and (
+        "," in t or re.search(r"\band\b", low)
+    ):
+        return True
+    return False
+
+
+def hierarchy_multi_capability_detected(combined_text: str) -> bool:
+    """
+    True when text or supplementary material suggests **two or more** business capabilities
+    (explicit lists, ``with`` tails, ``including``, or intake bucket bullets).
+    """
+    t = (combined_text or "").strip()
+    if not t:
+        return False
+    labs = parse_explicit_capability_labels(t)
+    if labs and len(labs) >= 2:
+        return True
+    if _intake_bucket_bullet_count(t) >= 2:
+        return True
+    if _prose_multi_capability_hint(t):
+        return True
+    return False
+
+
+_TRIVIAL_ISOLATED_MAX_WORDS = 14
+_TRIVIAL_ISOLATED_MAX_CHARS = 200
+
+
+def _obviously_isolated_tiny_feature_scope(text: str) -> bool:
+    """Very small scope with no enumeration — Epic vs stories choice would not change structure meaningfully."""
+    t = " ".join((text or "").split())
+    if not t:
+        return False
+    if len(t) > _TRIVIAL_ISOLATED_MAX_CHARS:
+        return False
+    if len(t.split()) > _TRIVIAL_ISOLATED_MAX_WORDS:
+        return False
+    if any(c in t for c in (",", ";", "•", "·")):
+        return False
+    if parse_explicit_capability_labels(t):
+        return False
+    low = t.lower()
+    if " with " in low and ("," in t or " and " in low):
+        return False
+    return True
+
+
+REQUIREMENT_GRANULARITY_GATE_PROMPT = """You decide whether the UI should show **one optional backlog hierarchy control** (program Epic + grouped buckets vs single feature / flat user stories vs keep intake default).
+
+**Pre-classified intake level:** {intake_level}
+**Preprocessing unit count** (intake slices this run): **{intake_unit_total}**
+**Multi-capability signals** (comma / with / including / intake buckets): **{multi_cap_detected}**
+**Product-level intent (broad build language):** {product_intent_detected}
+**Time-box / sprint-bundle language:** {timeboxed_detected}
+
+**Original requirement text (this slice):**
+---
+{raw_requirement_text}
+---
+
+**Structured extraction (JSON):**
+{understood_json}
+
+Return ONLY valid JSON (no markdown):
+{{
+  "needs_granularity_question": true or false,
+  "reason": "one short phrase"
+}}
+
+**Authoritative rules (follow strictly):**
+- **bug**: **needs_granularity_question** MUST be **false** (caller should not invoke this for bug — if you see bug, answer **false**).
+- **Single slice** (`intake_unit_total` == 1): Set **true** when backlog hierarchy choice **materially** changes artifacts **and**:
+  - Intake level is **product** AND **multi-capability signals** is **yes** — lean **true** unless scope is unmistakably one capability.
+  - Intake level is **sprint** AND (**multi-capability signals** is **yes** OR time-box language suggests several deliverables whose grouping is unclear).
+  - Intake level is **enhancement** AND **multi-capability signals** is **yes** (several major areas).
+  - Intake level is **feature** AND **multi-capability signals** is **yes** (suggests mis-scope or parallel capabilities worth separating).
+- Set **false** for **single slice** when scope is **obviously** one tiny isolated action (reset password, single button, one validation) **and** multi-capability is **no**.
+- **2–3 slices**: Often ambiguous whether to backlog as **one umbrella Epic** vs **separate feature-level** work — lean **true** unless every slice is clearly an unrelated product **or** the text explicitly fixes backlog shape.
+- If genuinely unsure on **single slice**, prefer **false** — **except** **product** + multi-capability signals **yes**, where you should prefer **true**.
+
+JSON only:"""
 
 # --- Step 1: Required fields (for detecting what is still missing) ---
 
@@ -112,11 +296,77 @@ def detect_missing_fields(
 
 # --- Step 3: Two-stage clarification ---
 
+
+def format_prior_clarification_log_for_prompt(log: list[dict[str, Any]] | None) -> str:
+    """
+    Turn ``clarification_log`` entries into a block for Stage 1 prompts (gap regeneration / evolution).
+    """
+    if not log:
+        return ""
+    lines: list[str] = []
+    for rnd in log:
+        if not isinstance(rnd, dict):
+            continue
+        stage = rnd.get("stage")
+        fi = rnd.get("feature_index")
+        ft = rnd.get("feature_total")
+        fl = (rnd.get("feature_label") or "").strip()
+        note = (rnd.get("note") or "").strip()
+        parts: list[str] = [f"**Stage {stage}"]
+        if fi is not None and ft is not None:
+            parts.append(f"feature {fi} of {ft}")
+        if fl:
+            parts.append(f"“{fl}”")
+        header = " — ".join(parts) + "**"
+        if note:
+            header += f" _({note})_"
+        lines.append(header)
+        items = rnd.get("items")
+        if isinstance(items, list):
+            for it in items:
+                if not isinstance(it, dict):
+                    continue
+                cat = (it.get("category") or "").strip()
+                q = (it.get("question") or "").strip()
+                ans = (it.get("answer") or "").strip()
+                if cat or q or ans:
+                    lines.append(f"  - `{cat}` **Q:** {q}")
+                    lines.append(f"    **A:** {ans}")
+        lines.append("")
+    return "\n".join(lines).strip()
+
+
+def _stage1_prior_clarification_block(formatted_log: str) -> str:
+    """Wrap prior-round Q&A for Stage 1 prompts (gap regeneration / refinement loops)."""
+    t = (formatted_log or "").strip()
+    if not t:
+        return ""
+    return (
+        "\n**Prior clarification rounds (already answered — do not repeat questions whose intent is "
+        "fully settled unless new scope below contradicts or reopens them; prioritize unresolved, vague, "
+        "or newly introduced topics):**\n"
+        f"{t}\n\n"
+    )
+
+
+def _stage1_gap_derived_block(gap_text: str) -> str:
+    """Optional emphasis block for gap-derived scope (may overlap full requirement text — still use for focus)."""
+    t = (gap_text or "").strip()
+    if not t:
+        return ""
+    return (
+        "\n**Scope emphasized from selected gaps / supplementary constraints (treat as part of the requirement; "
+        "ask targeted questions for new risks — e.g. retries, limits, security, edge cases — where relevant):**\n"
+        f"{t}\n\n"
+    )
+
+
 CLARIFICATION_STAGE1_PROMPT = """You are a business analyst. **Stage 1 — initial clarification:** generate a **base set** of clarification questions with SHORT suggested answers for dropdowns.
 
 **Original requirement (user's words):**
 {raw_requirement_text}
 {open_items_block}
+{prior_clarification_rounds_block}{gap_derived_scope_block}
 **Extracted structure:**
 - Action: {action}
 - Domain: {domain}
@@ -145,6 +395,8 @@ CLARIFICATION_STAGE1_PROMPT = """You are a business analyst. **Stage 1 — initi
 **No invention:** Do **not** ask about accessibility, WCAG, analytics, or topics **not** in the requirement.
 
 **No process meta in questions:** Do **not** ask about "interpretation strategy", "wording priorities", or how to resolve model ambiguity—only **product** decisions the business must make.
+
+**Adaptive clarification:** When **Prior clarification rounds** or **Scope emphasized from gaps** appear above, the requirement may have **evolved**. Base questions on the **full** original requirement text **and** any gap emphasis. Add questions that cover **new** concerns introduced there; **do not** near-duplicate prior questions when those topics already have clear, specific answers—unless new scope makes them incomplete.
 
 If fully explicit, return **{stage1_min}**–**{stage1_max}** short **scope_confirmation** questions—**without** adding new scope.
 
@@ -343,6 +595,232 @@ def _questions_from_llm_json(data: dict, *, max_questions: int) -> list[Clarific
     return out
 
 
+def build_requirement_granularity_clarification_question() -> ClarificationQuestion:
+    """Fixed Stage-1 question; option strings must match ``effective_requirement_level_for_artifacts``."""
+    return ClarificationQuestion(
+        category=REQUIREMENT_GRANULARITY_CATEGORY,
+        question=REQUIREMENT_GRANULARITY_QUESTION_TEXT,
+        options=[
+            GRANULARITY_OPTION_USE_INTAKE,
+            GRANULARITY_OPTION_EPIC,
+            GRANULARITY_OPTION_FEATURE,
+        ],
+    )
+
+
+def _intake_level_for_granularity_gate(
+    intake_level: str | None,
+    understood: UnderstoodRequirement,
+) -> str:
+    """Prefer real intake; fall back to coarse mapping from understanding ``type`` (CLI / tests)."""
+    if (intake_level or "").strip():
+        return normalize_requirement_level(intake_level)
+    t = (understood.type or "").lower()
+    if "bug" in t:
+        return "bug"
+    if "product" in t or "platform" in t:
+        return "product"
+    if "sprint" in t:
+        return "sprint"
+    if "enhancement" in t:
+        return "enhancement"
+    return "feature"
+
+
+def _granularity_gate_llm(
+    understood: UnderstoodRequirement,
+    raw_requirement_text: str,
+    *,
+    intake_level: str,
+    intake_unit_total: int,
+    multi_cap: bool,
+    product_intent: bool,
+    timeboxed: bool,
+    fallback_if_llm_fails: bool,
+) -> bool:
+    prompt = REQUIREMENT_GRANULARITY_GATE_PROMPT.format(
+        intake_level=intake_level,
+        intake_unit_total=intake_unit_total,
+        raw_requirement_text=(raw_requirement_text or "").strip() or "(none)",
+        understood_json=json.dumps(understood.to_dict(), ensure_ascii=False, indent=0),
+        product_intent_detected="yes" if product_intent else "no",
+        timeboxed_detected="yes" if timeboxed else "no",
+        multi_cap_detected="yes" if multi_cap else "no",
+    )
+    data = _run_clarification_llm_json(prompt, "Requirement granularity gate")
+    if not data:
+        return fallback_if_llm_fails
+    v = data.get("needs_granularity_question", data.get("needs_granularity"))
+    if isinstance(v, str):
+        return v.strip().lower() in ("true", "yes", "1")
+    return bool(v)
+
+
+def assess_need_for_granularity_clarification(
+    understood: UnderstoodRequirement,
+    raw_requirement_text: str,
+    intake_level: str | None,
+    *,
+    intake_unit_total: int = 1,
+    product_intent_source_text: str | None = None,
+    intake_supplementary_constraints: str | None = None,
+) -> bool:
+    """
+    When to show the optional hierarchy question (Epic / grouped buckets vs flat feature / intake default).
+
+    **Bug:** never. **≥4** slices: never (separate pipeline units). **2–3** slices: LLM gate with
+    fallback **true**. **Single slice:** **product** iff multi-capability detected; **sprint** if
+    multi-capability **or** (time-box gray zone via LLM); **enhancement** iff multi-capability;
+    **feature** iff multi-capability, skipping obvious tiny isolated scopes without enumeration.
+    Intake supplementary text (including focus hints on split units) counts toward multi-capability.
+    """
+    lvl = _intake_level_for_granularity_gate(intake_level, understood)
+    if lvl == "bug":
+        return False
+    n = max(1, int(intake_unit_total or 1))
+    if n >= 4:
+        return False
+
+    combined = _hierarchy_combined_text(
+        raw_requirement_text or "",
+        product_intent_source_text,
+        intake_supplementary_constraints,
+    )
+    pi_blob = (product_intent_source_text or "").strip() or (raw_requirement_text or "").strip()
+    product_intent = detect_product_level_intent(pi_blob) or detect_product_level_intent(combined)
+    timeboxed = detect_timeboxed_bundle_language(pi_blob) or detect_timeboxed_bundle_language(
+        combined
+    )
+    multi_cap = hierarchy_multi_capability_detected(combined)
+
+    if n in (2, 3):
+        return _granularity_gate_llm(
+            understood,
+            raw_requirement_text or "",
+            intake_level=lvl,
+            intake_unit_total=n,
+            multi_cap=multi_cap,
+            product_intent=product_intent,
+            timeboxed=timeboxed,
+            fallback_if_llm_fails=True,
+        )
+
+    if lvl == "product":
+        return multi_cap
+    if lvl == "enhancement":
+        if not multi_cap and _obviously_isolated_tiny_feature_scope(combined):
+            return False
+        return multi_cap
+    if lvl == "feature":
+        if not multi_cap and _obviously_isolated_tiny_feature_scope(combined):
+            return False
+        return multi_cap
+    if lvl == "sprint":
+        if multi_cap:
+            return True
+        if timeboxed:
+            return _granularity_gate_llm(
+                understood,
+                raw_requirement_text or "",
+                intake_level=lvl,
+                intake_unit_total=n,
+                multi_cap=False,
+                product_intent=product_intent,
+                timeboxed=True,
+                fallback_if_llm_fails=True,
+            )
+        return False
+
+    return _granularity_gate_llm(
+        understood,
+        raw_requirement_text or "",
+        intake_level=lvl,
+        intake_unit_total=n,
+        multi_cap=multi_cap,
+        product_intent=product_intent,
+        timeboxed=timeboxed,
+        fallback_if_llm_fails=False,
+    )
+
+
+def merge_stage1_questions_with_optional_granularity(
+    core_questions: list[ClarificationQuestion],
+    understood: UnderstoodRequirement,
+    raw_requirement_text: str,
+    intake_level: str | None,
+    intake_unit_total: int = 1,
+    *,
+    product_intent_source_text: str | None = None,
+    intake_supplementary_constraints: str | None = None,
+) -> tuple[list[ClarificationQuestion], int]:
+    """
+    Optionally prepend the granularity question. Drops any LLM duplicate of the reserved category.
+
+    ``intake_unit_total`` should be ``len(analyze_intake(...))`` for this run (``1`` for a single slice).
+    ``product_intent_source_text`` optional full user document for phrase detection (multi-feature
+    slices often omit program-level wording).
+    ``intake_supplementary_constraints`` optional intake-only bucket list — included in hierarchy detection.
+
+    Returns ``(questions_for_ui, budget_exclusions)`` where ``budget_exclusions`` is ``1`` if the
+    granularity question was added — that many slots are **excluded** from
+    ``CLARIFICATION_MAX_TOTAL_QUESTIONS`` when computing Stage 2 headroom.
+    """
+    core_clean = [
+        q
+        for q in core_questions
+        if q.category.strip().lower() != REQUIREMENT_GRANULARITY_CATEGORY.lower()
+    ]
+    if not assess_need_for_granularity_clarification(
+        understood,
+        raw_requirement_text or "",
+        intake_level,
+        intake_unit_total=intake_unit_total,
+        product_intent_source_text=product_intent_source_text,
+        intake_supplementary_constraints=intake_supplementary_constraints,
+    ):
+        return (list(core_clean), 0)
+    gq = build_requirement_granularity_clarification_question()
+    return ([gq] + core_clean, 1)
+
+
+def stage1_effective_budget_count(
+    stage1_questions: list[ClarificationQuestion],
+    budget_exclusions: int,
+) -> int:
+    """Slots that count toward ``CLARIFICATION_MAX_TOTAL_QUESTIONS`` (Stage 1 + Stage 2)."""
+    excl = max(0, int(budget_exclusions or 0))
+    return max(0, len(stage1_questions) - excl)
+
+
+def effective_requirement_level_for_artifacts(
+    clarified: ClarifiedRequirement | None,
+    intake_level: str | None,
+) -> str:
+    """
+    Intake level unless the user answered the optional granularity question — then force
+    ``product`` (epic path), ``feature`` (stories-only path), or keep intake when they chose the
+    automation default.
+    """
+    base = normalize_requirement_level(intake_level)
+    if clarified is None:
+        return base
+    raw = (clarified.additional.get(REQUIREMENT_GRANULARITY_CATEGORY) or "").strip()
+    if not raw:
+        return base
+    if raw == GRANULARITY_OPTION_USE_INTAKE:
+        return base
+    if raw == GRANULARITY_OPTION_EPIC:
+        return "product"
+    if raw == GRANULARITY_OPTION_FEATURE:
+        return "feature"
+    # Legacy labels (older sessions / exports)
+    if "Epic" in raw and "Treat" not in raw:
+        return "product"
+    if "Specific feature" in raw or ("user stories" in raw and "Treat" not in raw):
+        return "feature"
+    return base
+
+
 def _run_clarification_llm_json(prompt: str, agent_label: str) -> dict | None:
     with agent_log(agent_label):
         content = call_llm(prompt)
@@ -359,6 +837,9 @@ def generate_stage1_questions(
     raw_requirement_text: str,
     clarified: dict | None = None,
     open_items: list[str] | None = None,
+    *,
+    prior_clarification_for_prompt: str = "",
+    gap_derived_scope_text: str = "",
 ) -> list[ClarificationQuestion]:
     """
     Stage 1: ``CLARIFICATION_STAGE1_TARGET_MIN``–``MAX`` questions
@@ -367,9 +848,13 @@ def generate_stage1_questions(
     clarified = clarified or {}
     already = json.dumps(clarified, indent=0) if clarified else "None yet."
     oi_block = format_open_items_for_clarification_prompt(open_items)
+    prior_block = _stage1_prior_clarification_block(prior_clarification_for_prompt)
+    gap_block = _stage1_gap_derived_block(gap_derived_scope_text)
     prompt = CLARIFICATION_STAGE1_PROMPT.format(
         raw_requirement_text=raw_requirement_text or "(none)",
         open_items_block=oi_block,
+        prior_clarification_rounds_block=prior_block,
+        gap_derived_scope_block=gap_block,
         action=understood.action or "",
         domain=understood.domain or "",
         actor=understood.actor or "",
@@ -789,8 +1274,11 @@ def run_clarification(
     from stages.clarification_consistency import validate_clarification_answers
 
     clarified: dict[str, str] = {}
-    q1 = generate_stage1_questions(
+    core = generate_stage1_questions(
         understood, raw_requirement_text, {}, open_items=open_items
+    )
+    q1, budget_excl = merge_stage1_questions_with_optional_granularity(
+        core, understood, raw_requirement_text, None
     )
     if not q1:
         return ClarifiedRequirement(
@@ -807,7 +1295,10 @@ def run_clarification(
     vr1 = validate_clarification_answers(cr1)
     all_questions: list[ClarificationQuestion] = list(q1)
 
-    cap2 = CLARIFICATION_MAX_TOTAL_QUESTIONS - len(q1)
+    cap2 = max(
+        0,
+        CLARIFICATION_MAX_TOTAL_QUESTIONS - stage1_effective_budget_count(q1, budget_excl),
+    )
     need2 = clarification_needs_stage2(
         understood,
         raw_requirement_text,

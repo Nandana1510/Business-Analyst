@@ -85,3 +85,16 @@ export async function continueEmptyClarification(sessionId: string): Promise<Pip
   if (!r.ok) throw new Error(`Continue failed: ${r.status}`)
   return r.json()
 }
+
+export async function regenerateWithSelectedGaps(
+  sessionId: string,
+  selectedGapTexts: string[],
+): Promise<PipelineState> {
+  const r = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/regenerate-with-gaps`, {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ selected_gap_texts: selectedGapTexts }),
+  })
+  if (!r.ok) throw new Error(`Regenerate with gaps failed: ${r.status}`)
+  return r.json()
+}

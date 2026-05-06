@@ -103,6 +103,8 @@ class RefinedRequirement:
     domain: str = ""  # business domain from understanding stage (artifact prompts must stay aligned)
     # Preprocessing: lines routed to clarification/gap (not treated as functional requirements)
     open_items: list[str] = field(default_factory=list)
+    # Intake: multi-unit product slice — use one epic + single ``features[]`` row (no nested LLM split).
+    collapse_product_feature_decomposition: bool = False
 
     def to_dict(self) -> dict:
         d = {
@@ -115,6 +117,8 @@ class RefinedRequirement:
         }
         if self.secondary_actor:
             d["secondary_actor"] = self.secondary_actor
+        if self.collapse_product_feature_decomposition:
+            d["collapse_product_feature_decomposition"] = True
         return d
 
     def traceability_metadata(self) -> dict:
@@ -147,6 +151,7 @@ class RefinedRequirement:
 
 REFINEMENT_PROMPT = """You are a business analyst. Turn the following into a formal requirement definition using **strict, conservative interpretation**.
 {intake_hint_block}
+{narrative_block}
 **Structured requirement (authoritative source):**
 - Type: {type}
 - Actor (primary): {actor}
@@ -158,10 +163,14 @@ REFINEMENT_PROMPT = """You are a business analyst. Turn the following into a for
 
 {open_items_block}
 **Grounding rules (mandatory):**
+0. **Assumption-free (mandatory):** **No new business rules.** Every sentence in **feature_name**, **description**, and **business_rules** must restate or combine information that already appears in the structured requirement and/or clarification above. If something is **not** stated there, **do not** add it—even if it would be "normal" in industry practice.
 1. **Traceability:** Every business rule MUST be directly traceable to the structured requirement and/or the clarification answers above. Do **not** introduce new policies, constraints, deadlines, SLAs, limits, validations, edge cases, security rules, or conditions that are **not** explicitly stated in that text. Do not use "common sense," industry defaults, or unstated assumptions. When in doubt, omit—do not guess or pad the requirement.
 2. **No invention:** Do not infer additional restrictions (e.g. time limits, frequency caps, approval steps, notifications, compliance) unless the user or clarification **explicitly** mentioned them. Rephrasing is allowed; adding substance is not.
 3. **Clarification coverage:** Every clarification answer listed above must appear in at least one business rule (merged with related text if needed). Do not drop a stated clarification point.
+3b. **Clarification interpretation — preserve modality (mandatory):** Read each clarification line for **what the user actually decided**, not the strongest possible reading. **Do not** convert **conditional**, **context-specific**, **optional**, **preferred**, **example**, or **"when applicable"** answers into **universal must/always/shall** rules unless the answer text was explicitly mandatory (e.g. fixed policy, always-on behavior). Use **may**, **when**, **if**, **where configured**, or **optional** in the rule wording when the clarification left flexibility. **Do not** stack extra constraints onto a clarification answer beyond what it stated. If an answer is **"not applicable"** or **out of scope**, do **not** invent obligations for that topic.
 4. **Structured requirement coverage:** The feature name, description, and rules must reflect the stated type, actor, action, domain, and impact only as given—no broader scope than the sources support.
+4b. **Impact / integrations are not separate features:** **Impact** list items (impacted systems, external services, platforms) are **integration boundaries and dependencies** for **this** capability—**not** additional backlog features. Keep **one** cohesive **feature_name** anchored on the **primary user-facing action**; reference named systems in **description** or **business_rules** as integration context only, unless the user explicitly scoped **building or owning** a named system as its **own** deliverable.
+4c. **Constraints and SLAs are not new features:** Time windows, delivery guarantees, payment rules, and similar **constraints** belong in **business_rules** and/or **description** as testable obligations—**do not** widen scope into multiple **feature_name** candidates or separate "mini-features" per constraint line.
 5. **No duplication:** One rule per distinct grounded point. Merge overlapping or redundant phrasing into a single rule.
 6. **Concise wording:** One sentence per rule where possible. Plain, testable language. No filler.
 6b. **Natural description:** The **description** field must read like a **short stakeholder-facing summary** (active voice, concrete who/what/outcome)—the kind a BA would paste into Confluence or a PRD. Avoid stiff templates, duplicated clauses, or repeating the feature_name verbatim. It should sound **human and clear**, not like a generic spec generator.
@@ -197,16 +206,46 @@ def refine_requirement(
     intake_feature_label: str | None = None,
     requirement_level: str | None = None,
     open_items: list[str] | None = None,
+    gap_focus_block: str | None = None,
+    full_requirement_narrative: str | None = None,
+    *,
+    collapse_product_feature_decomposition: bool = False,
 ) -> RefinedRequirement:
     """
     Produce a formal requirement from the understood requirement and optional clarification.
     Business rules include traceability metadata; display text stays clean via format_output().
+
+    ``gap_focus_block``: optional free-text block (e.g. user-selected gap lines) appended after
+    clarification for a targeted refinement pass.
+
+    ``full_requirement_narrative``: optional full user requirement text (e.g. combined body after
+    gap regeneration) for literal terms and scope boundaries alongside structured fields.
     """
+    narrative_block = ""
+    narr = (full_requirement_narrative or "").strip()
+    if narr:
+        narrative_block = (
+            "\n**Original requirement text (user's words — use for literal terms, labels, and scope "
+            "boundaries together with the structured fields below; do not contradict clarification when "
+            "both apply):**\n---\n"
+            f"{narr}\n---\n"
+        )
     clarification_block = ""
     if clarification_context and clarification_context.strip():
         clarification_block = "\n" + clarification_context.strip()
     else:
         clarification_block = ""
+    gf = (gap_focus_block or "").strip()
+    if gf:
+        clarification_block += (
+            "\n\n**User-selected gap analysis (prioritize reflecting these concerns where they align "
+            "with the structured requirement and clarification above; treat them as **constraints, rules, "
+            "or refinements** on the existing capability—**not** as separate products, unrelated epics, or "
+            "wholly new features unless a line clearly names a distinct capability. Use **source** "
+            "`clarification` and **source_id** `gap_focus:n` for rules driven primarily by gap line n "
+            "below):**\n"
+            f"{gf}\n"
+        )
     oi = [x.strip() for x in (open_items or []) if (x or "").strip()]
     open_items_block = ""
     if oi:
@@ -225,6 +264,7 @@ def refine_requirement(
     sec_act = (understood.secondary_actor or "").strip()
     prompt = REFINEMENT_PROMPT.format(
         intake_hint_block=intake_hint_block,
+        narrative_block=narrative_block,
         type=understood.type,
         actor=understood.actor,
         secondary_actor=sec_act if sec_act else "— none —",
@@ -262,4 +302,5 @@ def refine_requirement(
             requirement_level=level,
             domain=dom,
             open_items=list(oi),
+            collapse_product_feature_decomposition=bool(collapse_product_feature_decomposition),
         )

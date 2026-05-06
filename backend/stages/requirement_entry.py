@@ -27,6 +27,8 @@ class RawRequirement:
     requirement_level: str | None = None  # from intake: product | sprint | feature | enhancement | bug
     # Lines classified as pending discussion / clarification (excluded from feature intake)
     open_items: list[str] = field(default_factory=list)
+    # Enrichment only (e.g. gap-derived): not used for intake splitting when pipeline passes core text separately.
+    supplementary_constraints: str = ""
 
     def is_empty(self) -> bool:
         return not (self.text and self.text.strip())

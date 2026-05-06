@@ -16,7 +16,10 @@ load_dotenv()
 from stages.requirement_entry import accept_requirement_from_console, RawRequirement
 from stages.requirement_intake import NormalizedRequirementUnit, analyze_intake
 from stages.requirement_understanding import understand_requirement, get_llm_provider_and_model
-from stages.requirement_clarification import run_clarification
+from stages.requirement_clarification import (
+    effective_requirement_level_for_artifacts,
+    run_clarification,
+)
 from stages.clarification_consistency import validate_clarification_answers
 from stages.requirement_refinement import refine_requirement
 from stages.artifact_generation import generate_all_artifacts, normalize_acceptance_criteria_format
@@ -232,8 +235,11 @@ def _run_pipeline_for_single_requirement(requirement: RawRequirement) -> bool:
             understood,
             clarification_context=clarified.to_refinement_block(),
             intake_feature_label=requirement.intake_feature_label,
-            requirement_level=requirement.requirement_level,
+            requirement_level=effective_requirement_level_for_artifacts(
+                clarified, requirement.requirement_level
+            ),
             open_items=requirement.open_items,
+            full_requirement_narrative=(requirement.text or "").strip() or None,
         )
         print(refined.format_output())
         print("--- End ---")
@@ -308,6 +314,7 @@ def main() -> None:
             intake_feature_label=unit.feature_name or None,
             requirement_level=unit.requirement_level or None,
             open_items=list(requirement.open_items or []),
+            supplementary_constraints=(getattr(unit, "supplementary_constraints", None) or "").strip(),
         )
         ok = _run_pipeline_for_single_requirement(sub)
         if not ok:

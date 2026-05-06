@@ -32,19 +32,21 @@
   border-bottom: none;
 }
 
-.ba-artifacts .ba-story h4 {
-  font-family: var(--g10x-font-primary);
-  font-size: 1rem;
-  font-weight: var(--g10x-weight-bold);
-  color: var(--g10x-grey-900);
+.ba-story-title-row {
   margin: 0 0 var(--s-8);
+  padding: 0;
+  border: none;
 }
 
-.ba-artifacts .ba-ref {
-  margin-left: var(--s-8);
-  font-size: 0.8rem;
+.ba-us-ref {
+  font-size: 1rem;
   color: var(--g10x-brand-red);
   font-weight: var(--g10x-weight-bold);
+}
+
+.ba-story-body {
+  white-space: pre-wrap;
+  margin-bottom: var(--s-16);
 }
 
 .ba-artifacts ul,
@@ -152,7 +154,11 @@
   margin-top: var(--s-8);
 }
 
-.ba-stories-under-expander .ba-story:first-child {
+.ba-stories-flat {
+  margin-top: var(--s-12);
+}
+
+.ba-stories-flat .ba-story:first-child {
   margin-top: 0;
   padding-top: 0;
 }
@@ -180,4 +186,69 @@
 
 .ba-section-guide-expander .ba-features-lead {
   margin: var(--s-8) 0 0;
+}
+
+/* Interactive gap selection + regeneration */
+.ba-gap-interactive-card {
+  margin-top: var(--s-24);
+}
+
+.ba-gap-interactive-title {
+  margin-top: 0;
+}
+
+.ba-gap-interactive-lead {
+  margin: 0 0 var(--s-16);
+  max-width: 52rem;
+}
+
+.ba-gap-select-list {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 var(--s-20);
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-8);
+}
+
+.ba-gap-select-row {
+  margin: 0;
+  border: 1px solid var(--g10x-grey-200, #e8e8e8);
+  border-radius: var(--g10x-radius-md, 8px);
+  background: var(--g10x-white, #fff);
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.ba-gap-select-row--selected {
+  border-color: var(--g10x-brand-orange, #e85d04);
+  background: rgba(232, 93, 4, 0.06);
+}
+
+.ba-gap-select-label {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s-12);
+  padding: var(--s-12) var(--s-14);
+  cursor: pointer;
+  font-size: 0.9375rem;
+  line-height: 1.45;
+}
+
+.ba-gap-checkbox {
+  margin-top: 0.2em;
+  flex-shrink: 0;
+  width: 1.1rem;
+  height: 1.1rem;
+  cursor: pointer;
+}
+
+.ba-gap-select-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.ba-gap-regenerate-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-12);
 }

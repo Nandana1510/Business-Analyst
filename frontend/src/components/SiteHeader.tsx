@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react'
+import { useCallback, useState, type ReactNode } from 'react'
 
 const HEADER_LOGO = '/g10x-header-logo.svg'
 
@@ -7,9 +7,11 @@ const HEADER_SCROLL_OFFSET_PX = 100
 
 type SiteHeaderProps = {
   subtitle?: string
+  /** e.g. “View clarifications” — rendered in the top-right before section nav */
+  actions?: ReactNode
 }
 
-export function SiteHeader({ subtitle }: SiteHeaderProps) {
+export function SiteHeader({ subtitle, actions }: SiteHeaderProps) {
   const [menuOpen, setMenuOpen] = useState(false)
 
   const scrollTo = useCallback((id: string) => {
@@ -53,7 +55,8 @@ export function SiteHeader({ subtitle }: SiteHeaderProps) {
           </button>
         </div>
         <div className="header-right">
-        <nav className="nav-menu" aria-label="Page sections">
+          {actions ? <div className="ba-header-actions">{actions}</div> : null}
+          <nav className="nav-menu" aria-label="Page sections">
             <button type="button" className="nav-item" onClick={() => scrollTo('ba-input')}>
               Input
             </button>

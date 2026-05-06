@@ -1,11 +1,15 @@
 """
 FastAPI server for the Vite + React frontend. Run: ``uvicorn api_app:app --reload --app-dir backend``
 (or from ``backend``: ``uvicorn api_app:app --reload``).
+
+Pipeline activity (intake, each LLM agent, refinement, artifacts, session milestones) is logged to
+**stderr** under the name ``ba.pipeline`` (see ``PIPELINE_LOG_LEVEL`` in ``.env.example``).
 """
 
 from __future__ import annotations
 
 import os
+from contextlib import asynccontextmanager
 from typing import Any
 
 from dotenv import load_dotenv
@@ -22,13 +26,25 @@ from stages.artifact_generation import (
     ARTIFACT_MODE_BY_LABEL,
     normalize_acceptance_criteria_format,
 )
+from stages.pipeline_logging import configure_pipeline_logging, pipeline_log
 from stages.requirement_clarification import OTHER_OPTION_LABEL
 
 from api_pipeline_session import PipelineSession
 
 SESSIONS: dict[str, PipelineSession] = {}
 
-app = FastAPI(title="AI Business Analyst API", version="1.0.0")
+
+@asynccontextmanager
+async def _lifespan(_app: FastAPI):
+    configure_pipeline_logging()
+    pipeline_log().info(
+        "API startup — pipeline steps log to stderr as [ba.pipeline] "
+        "(set PIPELINE_LOG_LEVEL=DEBUG for more detail)"
+    )
+    yield
+
+
+app = FastAPI(title="AI Business Analyst API", version="1.0.0", lifespan=_lifespan)
 
 _origins = os.environ.get("CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173").strip()
 app.add_middleware(
@@ -56,6 +72,12 @@ class ClarificationSubmitBody(BaseModel):
     """Map category (slug) -> answer text; empty string means 'not answered'."""
 
     answers: dict[str, str] = Field(default_factory=dict)
+
+
+class RegenerateGapsBody(BaseModel):
+    """Exact gap lines from the current artifact output (order matches UI flattening)."""
+
+    selected_gap_texts: list[str] = Field(default_factory=list)
 
 
 @app.get("/api/health")
@@ -129,6 +151,7 @@ async def generate(
     s = SESSIONS.get(session_id)
     if not s:
         raise HTTPException(status_code=404, detail="Session not found")
+    pipeline_log().info("[%s] HTTP POST generate (file=%s)", session_id, bool(file and file.filename))
     mode = ARTIFACT_MODE_BY_LABEL.get(artifact_scope_label, "all")
     ac_fmt = normalize_acceptance_criteria_format(acceptance_criteria_format)
     file_bytes: bytes | None = None
@@ -151,6 +174,7 @@ def submit_clarification(session_id: str, body: ClarificationSubmitBody) -> dict
     s = SESSIONS.get(session_id)
     if not s:
         raise HTTPException(status_code=404, detail="Session not found")
+    pipeline_log().info("[%s] HTTP POST clarification (stage=%s)", session_id, s.clarification_cl_stage)
     ok, err = s.submit_clarification(body.answers)
     if not ok and err:
         s.error = err
@@ -164,5 +188,18 @@ def continue_empty_clarification(session_id: str) -> dict[str, Any]:
     s = SESSIONS.get(session_id)
     if not s:
         raise HTTPException(status_code=404, detail="Session not found")
+    pipeline_log().info("[%s] HTTP POST continue-empty-clarification", session_id)
     s.continue_empty_clarification()
+    return s.public_state()
+
+
+@app.post("/api/sessions/{session_id}/regenerate-with-gaps")
+def regenerate_with_gaps(session_id: str, body: RegenerateGapsBody) -> dict[str, Any]:
+    s = SESSIONS.get(session_id)
+    if not s:
+        raise HTTPException(status_code=404, detail="Session not found")
+    pipeline_log().info(
+        "[%s] HTTP POST regenerate-with-gaps (%d selected)", session_id, len(body.selected_gap_texts or [])
+    )
+    s.regenerate_with_selected_gaps(body.selected_gap_texts)
     return s.public_state()

@@ -1,0 +1,50 @@
+{
+  "metadata": {
+    "saved_at_utc": "2026-04-21T05:31:45+00:00",
+    "pipeline_kind": "single_feature",
+    "requirement_level": "feature",
+    "artifact_generation_scope": "all",
+    "acceptance_criteria_format": "declarative",
+    "feature_count": 1,
+    "user_story_count": 1
+  },
+  "original_requirement": "User must be able to pause meal subscription.",
+  "open_items_from_preprocess": [],
+  "understanding": {
+    "type": "Feature",
+    "actor": "User"
+  },
+  "refined_requirement": {
+    "feature_name": "X",
+    "business_rules": [
+      {
+        "rule_id": "BR1",
+        "text": "t",
+        "source": "clarification",
+        "source_id": "s"
+      }
+    ]
+  },
+  "artifacts": {
+    "epic": null,
+    "features": [],
+    "user_stories": [
+      {
+        "story": "As a user",
+        "story_ref": "US1",
+        "acceptance_criteria": [
+          {
+            "text": "ac1",
+            "traces_to": "BR1"
+          }
+        ]
+      }
+    ],
+    "user_journey": [],
+    "gap_analysis": [],
+    "bug_report": null
+  },
+  "clarification": {
+    "pause_policy": "yes"
+  }
+}

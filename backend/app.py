@@ -35,9 +35,12 @@ from stages.requirement_clarification import (
     OTHER_OPTION_LABEL,
     clarification_needs_stage2,
     detect_missing_fields,
+    effective_requirement_level_for_artifacts,
     generate_stage1_questions,
     generate_stage2_questions,
+    merge_stage1_questions_with_optional_granularity,
     normalize_responses_with_questions,
+    stage1_effective_budget_count,
 )
 from stages.clarification_consistency import validate_clarification_answers
 from stages.requirement_refinement import RefinedRequirement, refine_requirement
@@ -52,6 +55,18 @@ from stages.artifact_generation import (
 from stages.run_output_storage import persist_multi_feature_run, persist_single_feature_run
 # First selectbox entry: Streamlit always pre-selects index 0, so this must not be a real answer.
 CLARIFICATION_SELECT_PLACEHOLDER = "— Select an option —"
+
+
+def _session_clarification_requirement_context() -> str:
+    """Active intake unit / sub-requirement text only — not the full original upload."""
+    return (st.session_state.get("raw_text") or "").strip()
+
+
+def _session_collapse_from_active_unit() -> bool:
+    au = st.session_state.get("active_intake_unit")
+    if isinstance(au, NormalizedRequirementUnit):
+        return bool(getattr(au, "collapse_product_feature_decomposition", False))
+    return False
 
 
 def _show_clarification_validation(clarified: ClarifiedRequirement) -> bool:
@@ -164,6 +179,7 @@ def _multi_feature_finish_cleanup() -> None:
     st.session_state.understood = None
     st.session_state.clarification_questions = []
     st.session_state.clarification_stage1_questions = []
+    st.session_state.clarification_stage1_budget_exclusions = 0
     st.session_state.clarification_cl_stage = 1
     st.session_state.clarification_pending_answers_s1 = None
     st.session_state.clarification_stage2_notes = None
@@ -181,7 +197,9 @@ def _append_completed_bundle(
     idx = st.session_state.multi_feature_index
     au = st.session_state.get("active_intake_unit")
     fl = (au.feature_name if isinstance(au, NormalizedRequirementUnit) else "") or ""
-    rl = (au.requirement_level if isinstance(au, NormalizedRequirementUnit) else "") or ""
+    rl = (getattr(refined, "requirement_level", None) or "").strip() or (
+        (au.requirement_level if isinstance(au, NormalizedRequirementUnit) else "") or ""
+    )
     st.session_state.multi_feature_results.append(
         FeaturePipelineBundle(
             index=idx + 1,
@@ -198,10 +216,12 @@ def _append_completed_bundle(
 
 
 def _run_understanding_for_unit(unit: NormalizedRequirementUnit) -> None:
+    supp = (getattr(unit, "supplementary_constraints", None) or "").strip()
     requirement = RawRequirement(
         text=unit.text,
         intake_feature_label=unit.feature_name or None,
         requirement_level=unit.requirement_level or None,
+        supplementary_constraints=supp,
     )
     understood = understand_requirement(requirement)
     st.session_state.understood = understood
@@ -209,14 +229,26 @@ def _run_understanding_for_unit(unit: NormalizedRequirementUnit) -> None:
     st.session_state.active_intake_unit = unit
     oi = st.session_state.get("intake_open_items") or []
     try:
-        qs = generate_stage1_questions(understood, unit.text, {}, open_items=oi)
+        core = generate_stage1_questions(understood, unit.text, {}, open_items=oi)
     except Exception as e:
         st.session_state.error = (
             f"Clarification Stage 1 failed (you can retry after fixing LLM access): {e}"
         )
-        qs = []
+        core = []
+    qs, budget_excl = merge_stage1_questions_with_optional_granularity(
+        core,
+        understood,
+        unit.text,
+        unit.requirement_level,
+        len(st.session_state.multi_feature_units or []) or 1,
+        product_intent_source_text=st.session_state.get("original_requirement_text")
+        or st.session_state.get("raw_text")
+        or "",
+        intake_supplementary_constraints=supp or None,
+    )
     st.session_state.clarification_questions = qs
     st.session_state.clarification_stage1_questions = list(qs)
+    st.session_state.clarification_stage1_budget_exclusions = budget_excl
     st.session_state.clarification_cl_stage = 1
     st.session_state.clarification_pending_answers_s1 = None
     st.session_state.clarification_stage2_notes = None
@@ -247,6 +279,8 @@ def _multi_feature_auto_advance_through_empty_clarification(
                 intake_feature_label=intake_lbl,
                 requirement_level=lvl,
                 open_items=oi,
+                full_requirement_narrative=_session_clarification_requirement_context() or None,
+                collapse_product_feature_decomposition=_session_collapse_from_active_unit(),
             )
             artifacts = generate_artifacts_for_mode(
                 refined,
@@ -279,8 +313,9 @@ def _render_generated_artifacts(
     _il = (intake_level or "").strip().lower()
     if _il == "product":
         st.info(
-            "**Product-level output:** **each feature** has its own **epic**, **user stories**, **user journey**, "
-            "and **gap analysis** (no single epic or global journey/gap for the whole product)."
+            "**Product-level output:** **One program epic** (above when generated); **features** below group "
+            "related **user stories**. **One** consolidated **user journey** and **one** **gap analysis** apply "
+            "across the backlog areas—not a separate epic or journey under each feature row."
         )
     if arts.bug_report:
         br = arts.bug_report
@@ -335,7 +370,10 @@ def _render_generated_artifacts(
     else:
         il = _il
         if il == "product" and arts.features:
-            st.caption("No single whole-product epic — each feature below includes its own epic when generated.")
+            st.caption(
+                "No structured epic document was returned — feature buckets below may still list stories. "
+                "Retry artifact generation if this persists."
+            )
         elif il == "product":
             st.warning(
                 "No feature buckets were returned (generation may have failed). Check user stories below if any."
@@ -353,8 +391,12 @@ def _render_generated_artifacts(
     if arts.features:
         st.markdown("### Features & user stories")
         st.caption(
-            "Each **feature** can include its own epic, user stories, journey, and gap analysis. "
-            "Stories include acceptance criteria."
+            "Each **feature** row groups **user stories** (acceptance criteria per story). "
+            + (
+                "Per-feature mini-epics are not used at product level — see the program epic above."
+                if _il == "product"
+                else "Optional per-feature epic/journey/gap may appear for sprint-level runs."
+            )
         )
         for fi, feat in enumerate(arts.features, 1):
             st.markdown(f"#### Feature {fi}: {feat.feature_name}")
@@ -470,6 +512,8 @@ if "clarification_cl_stage" not in st.session_state:
     st.session_state.clarification_cl_stage = 1
 if "clarification_stage1_questions" not in st.session_state:
     st.session_state.clarification_stage1_questions = []
+if "clarification_stage1_budget_exclusions" not in st.session_state:
+    st.session_state.clarification_stage1_budget_exclusions = 0
 if "clarification_pending_answers_s1" not in st.session_state:
     st.session_state.clarification_pending_answers_s1 = None
 if "clarification_stage2_notes" not in st.session_state:
@@ -496,8 +540,7 @@ artifact_scope_label = st.selectbox(
     index=0,
     help="**Product:** per-feature epic, stories, user journey, and gap analysis (no single whole-product epic). "
     "**Sprint:** features + user stories per feature only (no epic, journey, or gap). "
-    "**Feature / enhancement:** user stories + AC only. **Bug:** bug report + optional fix story. "
-    "User Stories and Acceptance Criteria modes use the same story agent.",
+    "**Feature / enhancement:** user stories with acceptance criteria per story. **Bug:** bug report + optional fix story.",
 )
 artifact_mode = ARTIFACT_MODE_BY_LABEL[artifact_scope_label]
 _ac_fmt_display = [lbl for lbl, _ in ACCEPTANCE_CRITERIA_FORMAT_LABELS]
@@ -526,12 +569,15 @@ def _run_refinement_after_clarification(clarified: ClarifiedRequirement) -> None
         ilab = au2.feature_name if isinstance(au2, NormalizedRequirementUnit) else None
         ilvl = au2.requirement_level if isinstance(au2, NormalizedRequirementUnit) else None
         oi = st.session_state.get("intake_open_items") or []
+        eff_level = effective_requirement_level_for_artifacts(clarified, ilvl)
         refined = refine_requirement(
             st.session_state.understood,
             clarification_context=clarified.to_refinement_block(),
             intake_feature_label=ilab,
-            requirement_level=ilvl,
+            requirement_level=eff_level,
             open_items=oi,
+            full_requirement_narrative=_session_clarification_requirement_context() or None,
+            collapse_product_feature_decomposition=_session_collapse_from_active_unit(),
         )
         artifacts = generate_artifacts_for_mode(
             refined,
@@ -541,6 +587,7 @@ def _run_refinement_after_clarification(clarified: ClarifiedRequirement) -> None
     st.session_state.clarified = clarified
     st.session_state.clarification_questions = []
     st.session_state.clarification_stage1_questions = []
+    st.session_state.clarification_stage1_budget_exclusions = 0
     if _multi_feature_active():
         _append_completed_bundle(refined, artifacts, clarified)
         units = st.session_state.multi_feature_units
@@ -634,6 +681,7 @@ if run_clicked:
                 st.session_state.understood = None
                 st.session_state.clarification_questions = []
                 st.session_state.clarification_stage1_questions = []
+                st.session_state.clarification_stage1_budget_exclusions = 0
                 st.session_state.clarification_cl_stage = 1
                 st.session_state.clarification_pending_answers_s1 = None
                 st.session_state.clarification_stage2_notes = None
@@ -646,18 +694,39 @@ if run_clicked:
                     u0 = units[0]
                     st.session_state.active_intake_unit = u0
                     st.session_state.intake_level_display = u0.requirement_level
-                    understood = understand_requirement(RawRequirement(text=u0.text))
+                    oi = st.session_state.get("intake_open_items") or []
+                    understood = understand_requirement(
+                        RawRequirement(
+                            text=u0.text,
+                            intake_feature_label=u0.feature_name or None,
+                            requirement_level=u0.requirement_level or None,
+                            supplementary_constraints=(getattr(u0, "supplementary_constraints", None) or ""),
+                            open_items=oi,
+                        )
+                    )
                     st.session_state.understood = understood
                     st.session_state.raw_text = u0.text
-                    oi = st.session_state.get("intake_open_items") or []
-                    questions = generate_stage1_questions(
+                    supp0 = (getattr(u0, "supplementary_constraints", None) or "").strip()
+                    core = generate_stage1_questions(
                         understood,
                         st.session_state.raw_text,
                         {},
                         open_items=oi,
                     )
+                    questions, budget_excl = merge_stage1_questions_with_optional_granularity(
+                        core,
+                        understood,
+                        st.session_state.raw_text,
+                        u0.requirement_level,
+                        len(units),
+                        product_intent_source_text=st.session_state.get("original_requirement_text")
+                        or st.session_state.raw_text
+                        or "",
+                        intake_supplementary_constraints=supp0 or None,
+                    )
                     st.session_state.clarification_questions = questions
                     st.session_state.clarification_stage1_questions = list(questions)
+                    st.session_state.clarification_stage1_budget_exclusions = budget_excl
                     st.session_state.clarification_cl_stage = 1
                     st.session_state.clarification_pending_answers_s1 = None
                     st.session_state.clarification_stage2_notes = None
@@ -669,6 +738,11 @@ if run_clicked:
                             intake_feature_label=u0.feature_name or None,
                             requirement_level=u0.requirement_level,
                             open_items=oi,
+                            full_requirement_narrative=_session_clarification_requirement_context()
+                            or None,
+                            collapse_product_feature_decomposition=bool(
+                                getattr(u0, "collapse_product_feature_decomposition", False)
+                            ),
                         )
                         artifacts = generate_artifacts_for_mode(
                             refined,
@@ -684,6 +758,7 @@ if run_clicked:
                     st.session_state.understood = None
                     st.session_state.clarification_questions = []
                     st.session_state.clarification_stage1_questions = []
+                    st.session_state.clarification_stage1_budget_exclusions = 0
                     st.session_state.clarification_cl_stage = 1
                     st.session_state.clarification_pending_answers_s1 = None
                     st.session_state.clarification_stage2_notes = None
@@ -854,7 +929,7 @@ if (
     submitted = st.button("Submit answers & continue", key="clarification_submit")
     if submitted:
         understood = st.session_state.understood
-        raw_txt = st.session_state.raw_text or ""
+        raw_txt = _session_clarification_requirement_context()
         cur_questions = st.session_state.clarification_questions
         answers_dict: dict[str, str] = {}
         for cq in cur_questions:
@@ -881,7 +956,13 @@ if (
                     validation_has_warnings=vr1.has_warnings,
                 )
                 missing = detect_missing_fields(understood, norm1)
-                cap2 = max(0, CLARIFICATION_MAX_TOTAL_QUESTIONS - len(s1qs))
+                cap2 = max(
+                    0,
+                    CLARIFICATION_MAX_TOTAL_QUESTIONS
+                    - stage1_effective_budget_count(
+                        s1qs, st.session_state.get("clarification_stage1_budget_exclusions") or 0
+                    ),
+                )
                 q2: list = []
                 if need2 and cap2 > 0:
                     with st.spinner("Preparing Stage 2 follow-up questions (if needed)…"):
@@ -969,6 +1050,7 @@ if (
                 "understood",
                 "clarification_questions",
                 "clarification_stage1_questions",
+                "clarification_stage1_budget_exclusions",
                 "clarification_cl_stage",
                 "clarification_pending_answers_s1",
                 "clarification_stage2_notes",

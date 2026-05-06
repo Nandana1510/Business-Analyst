@@ -3,6 +3,9 @@ Domain- and keyword-aware enrichment for ``impact`` (impacted systems / capabili
 
 Merges with LLM-extracted impacts: preserves model output first, then adds inferred
 labels from lightweight rules. Capped and de-duplicated to stay relevant, not excessive.
+
+**Not backlog features:** These strings are **integration / dependency hints** for understanding
+and refinement—downstream intake and artifacts must **not** treat each label as its own feature.
 """
 
 from __future__ import annotations

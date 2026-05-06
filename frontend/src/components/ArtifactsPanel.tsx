@@ -1,3 +1,4 @@
+import { useEffect, useMemo, useState } from 'react'
 import type { ArtifactsPayload } from '../types'
 
 function isRecord(x: unknown): x is Record<string, unknown> {
@@ -9,11 +10,35 @@ function stringList(val: unknown): string[] {
   return val.map((x) => String(x).trim()).filter(Boolean)
 }
 
+/** Top-level gap arrays only (snake or camelCase). */
+function topLevelGapLines(artifacts: ArtifactsPayload): string[] {
+  return [...stringList(artifacts.gap_analysis), ...stringList(artifacts.gapAnalysis)]
+}
+
+function collectGapsFromFeatureRecord(
+  f: Record<string, unknown>,
+  rows: { key: string; text: string }[],
+  k: { n: number },
+): void {
+  for (const text of stringList(f.gap_analysis)) {
+    rows.push({ key: `gap-${k.n++}`, text })
+  }
+  for (const text of stringList(f.gapAnalysis)) {
+    rows.push({ key: `gap-${k.n++}`, text })
+  }
+  const nested = f.features ?? f.sub_features
+  if (Array.isArray(nested)) {
+    for (const sub of nested) {
+      if (isRecord(sub)) collectGapsFromFeatureRecord(sub, rows, k)
+    }
+  }
+}
+
 type EpicBlockProps = {
   epic: unknown
   /** When true, no outer `.card` — use inside another card/section. */
   embedded?: boolean
-  /** Main heading (e.g. "Epic" or "Epic (this feature)"). */
+  /** Main heading (e.g. "Epic"). */
   title?: string
 }
 
@@ -226,6 +251,106 @@ function GapBlock({ title, items }: { title: string; items: string[] }) {
   )
 }
 
+/**
+ * Same ordering as backend `_gap_lines_from_artifacts_dict`: top-level ``gap_analysis`` /
+ * ``gapAnalysis``, then each root ``features[]`` entry (including nested ``features`` /
+ * ``sub_features`` on a feature object).
+ */
+export function flattenGapLinesForRegeneration(artifacts: ArtifactsPayload): { key: string; text: string }[] {
+  const rows: { key: string; text: string }[] = []
+  const k = { n: 0 }
+  for (const text of topLevelGapLines(artifacts)) {
+    rows.push({ key: `gap-${k.n++}`, text })
+  }
+  const feats = Array.isArray(artifacts.features) ? artifacts.features : []
+  feats.forEach((f) => {
+    if (isRecord(f)) collectGapsFromFeatureRecord(f, rows, k)
+  })
+  return rows
+}
+
+export function InteractiveGapRegeneration({
+  rows,
+  busy,
+  onRegenerate,
+  scopeHint,
+}: {
+  rows: { key: string; text: string }[]
+  busy: boolean
+  onRegenerate: (texts: string[]) => void
+  /** Optional context (e.g. which intake unit when multiple features were processed). */
+  scopeHint?: string
+}) {
+  const [selected, setSelected] = useState<Set<number>>(() => new Set())
+
+  useEffect(() => {
+    setSelected(new Set())
+  }, [rows, scopeHint])
+
+  const toggle = (i: number) => {
+    setSelected((prev) => {
+      const n = new Set(prev)
+      if (n.has(i)) n.delete(i)
+      else n.add(i)
+      return n
+    })
+  }
+
+  const texts = Array.from(selected)
+    .sort((a, b) => a - b)
+    .map((i) => rows[i]?.text)
+    .filter((t): t is string => Boolean(t && String(t).trim()))
+
+  return (
+    <section className="card ba-gap-interactive-card" aria-label="Select gaps for regeneration">
+      <h3 className="ba-gap-interactive-title">Gap analysis — refine further</h3>
+      <p className="hint-muted ba-gap-interactive-lead">
+        {scopeHint ? (
+          <>
+            <strong>{scopeHint}</strong>{' '}
+          </>
+        ) : null}
+        Select one or more items from <strong>this run&apos;s</strong> gap analysis (every top-level and per-feature
+        line listed below). Each selected gap becomes a short requirement line under &quot;Additional requirements&quot;
+        on your original text, and the <strong>full pipeline</strong> runs again (intake → understanding → clarification
+        → refinement → artifacts). Selections reset after this action or when you start a new requirement.
+      </p>
+      <ul className="ba-gap-select-list" role="list">
+        {rows.map((row, i) => {
+          const on = selected.has(i)
+          return (
+            <li
+              key={row.key}
+              className={`ba-gap-select-row${on ? ' ba-gap-select-row--selected' : ''}`}
+            >
+              <label className="ba-gap-select-label">
+                <input
+                  type="checkbox"
+                  className="ba-gap-checkbox"
+                  checked={on}
+                  disabled={busy}
+                  onChange={() => toggle(i)}
+                />
+                <span className="ba-gap-select-text">{row.text}</span>
+              </label>
+            </li>
+          )
+        })}
+      </ul>
+      <div className="ba-gap-regenerate-actions">
+        <button
+          type="button"
+          className="btn btn-primary"
+          disabled={busy || texts.length === 0}
+          onClick={() => onRegenerate(texts)}
+        >
+          Regenerate with Selected Gaps
+        </button>
+      </div>
+    </section>
+  )
+}
+
 function UserStoriesBlock({ title, stories }: { title: string; stories: unknown[] }) {
   const list = stories.filter(isRecord)
   if (!list.length) return null
@@ -247,16 +372,19 @@ function FeatureBlock({
   feat,
   index1,
   showEpic,
+  hideGapAnalysis,
 }: {
   feat: Record<string, unknown>
   index1: number
-  /** Epics are only shown for product-level requirements. */
+  /** Epics under each feature bucket (product always; sprint when backend attached per-feature epics). */
   showEpic: boolean
+  /** When true, gap list is shown only in the interactive regeneration card (avoid duplicate UI). */
+  hideGapAnalysis?: boolean
 }) {
   const name = String(feat.feature_name ?? `Feature ${index1}`)
   const stories = Array.isArray(feat.user_stories) ? feat.user_stories : []
   const uj = stringList(feat.user_journey)
-  const ga = stringList(feat.gap_analysis)
+  const ga = [...stringList(feat.gap_analysis), ...stringList(feat.gapAnalysis)]
   const epic = feat.epic
 
   return (
@@ -268,10 +396,10 @@ function FeatureBlock({
         <p className="hint-muted ba-feature-summary">{String(feat.feature_summary)}</p>
       ) : null}
       {showEpic && (isRecord(epic) || (typeof epic === 'string' && String(epic).trim())) ? (
-        <EpicBlock epic={epic} embedded title="Epic (this feature)" />
+        <EpicBlock epic={epic} embedded title="Epic" />
       ) : null}
       <JourneyBlock title={name} steps={uj} />
-      <GapBlock title={name} items={ga} />
+      {!hideGapAnalysis ? <GapBlock title={name} items={ga} /> : null}
       {stories.length > 0 ? (
         <UserStoriesBlock title={name} stories={stories} />
       ) : (
@@ -281,10 +409,19 @@ function FeatureBlock({
   )
 }
 
+export type GapRegenerationProps = {
+  busy: boolean
+  onRegenerate: (selectedGapTexts: string[]) => void
+  /** Shown above the checklist (e.g. which intake unit in a multi-feature run). */
+  scopeHint?: string
+}
+
 export type ArtifactsPanelProps = {
   artifacts: ArtifactsPayload
   /** Intake level from refined requirement (e.g. `product`) — drives product-level callouts. */
   intakeLevel?: string | null
+  /** When set and gaps exist, show checkboxes + regenerate (covers all gap lines in this artifact payload). */
+  gapRegeneration?: GapRegenerationProps | null
 }
 
 function featuresHaveBucketedStories(features: unknown[] | undefined): boolean {
@@ -294,12 +431,16 @@ function featuresHaveBucketedStories(features: unknown[] | undefined): boolean {
   )
 }
 
-export function ArtifactsPanel({ artifacts, intakeLevel }: ArtifactsPanelProps) {
+export function ArtifactsPanel({ artifacts, intakeLevel, gapRegeneration }: ArtifactsPanelProps) {
   const br = artifacts.bug_report
   const lvl = (intakeLevel || '').trim().toLowerCase()
   const isProduct = lvl === 'product'
+  const isSprint = lvl === 'sprint'
   const isFeatureLike = lvl === 'feature' || lvl === 'enhancement'
+  const showPerFeatureEpic = isProduct || isSprint
   const featureList = Array.isArray(artifacts.features) ? (artifacts.features as unknown[]) : []
+  const gapRows = useMemo(() => flattenGapLinesForRegeneration(artifacts), [artifacts])
+  const showGapRegen = Boolean(gapRegeneration && gapRows.length > 0)
   const hasPerFeatureStories = featuresHaveBucketedStories(featureList)
   /** Flat `user_stories` duplicates per-feature lists when both are present; show flat only as fallback. */
   const showFlatUserStories =
@@ -319,14 +460,29 @@ export function ArtifactsPanel({ artifacts, intakeLevel }: ArtifactsPanelProps) 
           <details className="ba-expander ba-section-guide-expander">
             <summary>How this section is organized</summary>
             <p className="hint-muted ba-features-lead">
-              Each <strong>feature</strong> can include
-              {isProduct ? <> its own epic, </> : null} user stories, journey, and gap analysis. Epics, journeys, gaps,
-              and stories open on click. Stories include acceptance criteria when the model returns them.
+              Each <strong>feature</strong> row groups related user stories.
+              {isProduct ? (
+                <>
+                  {' '}
+                  The <strong>Epic</strong> above describes the whole program; backlog rows below are for stories and
+                  journeys only—not nested mini-epics.
+                </>
+              ) : isSprint ? (
+                <> Some sprints include an optional epic per row when the backlog is broad.</>
+              ) : null}{' '}
+              Epics, journeys, gaps, and stories open on click. Stories include acceptance criteria when the model
+              returns them.
             </p>
           </details>
           {featureList.map((feat, fi) =>
             isRecord(feat) ? (
-              <FeatureBlock key={fi} feat={feat} index1={fi + 1} showEpic={isProduct} />
+              <FeatureBlock
+                key={fi}
+                feat={feat}
+                index1={fi + 1}
+                showEpic={showPerFeatureEpic}
+                hideGapAnalysis={showGapRegen}
+              />
             ) : null,
           )}
         </section>
@@ -376,13 +532,13 @@ export function ArtifactsPanel({ artifacts, intakeLevel }: ArtifactsPanelProps) 
         </section>
       ) : null}
 
-      {artifacts.gap_analysis?.length ? (
+      {topLevelGapLines(artifacts).length > 0 && !showGapRegen ? (
         <section className="card ba-artifact-collapsible-card">
           <details className="ba-expander">
             <summary>
               {isFeatureLike
-                ? `Gap analysis — ${artifacts.gap_analysis.length} items`
-                : `Gap analysis (global) — ${artifacts.gap_analysis.length} items`}
+                ? `Gap analysis — ${topLevelGapLines(artifacts).length} items`
+                : `Gap analysis (global) — ${topLevelGapLines(artifacts).length} items`}
             </summary>
             <div className="ba-collapsible-body">
               <p className="hint-muted">
@@ -391,13 +547,22 @@ export function ArtifactsPanel({ artifacts, intakeLevel }: ArtifactsPanelProps) 
                   : 'Cross-cutting gaps and risks across the full scope.'}
               </p>
               <ul className="ba-gap-ul">
-                {artifacts.gap_analysis.map((g, i) => (
+                {topLevelGapLines(artifacts).map((g, i) => (
                   <li key={i}>{g}</li>
                 ))}
               </ul>
             </div>
           </details>
         </section>
+      ) : null}
+
+      {showGapRegen && gapRegeneration ? (
+        <InteractiveGapRegeneration
+          rows={gapRows}
+          busy={gapRegeneration.busy}
+          onRegenerate={gapRegeneration.onRegenerate}
+          scopeHint={gapRegeneration.scopeHint}
+        />
       ) : null}
     </div>
   )

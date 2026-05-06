@@ -1,0 +1,120 @@
+{
+  "metadata": {
+    "saved_at_utc": "2026-04-21T05:31:45.982124+00:00",
+    "pipeline_kind": "single_feature",
+    "requirement_level": "feature",
+    "artifact_generation_scope": "all",
+    "acceptance_criteria_format": "declarative",
+    "feature_count": 1,
+    "user_story_count": 1
+  },
+  "original_requirement": "User must be able to pause meal subscription.",
+  "open_items_from_preprocess": [],
+  "understanding": {
+    "type": "Feature",
+    "actor": "User",
+    "action": "Pause meal subscription",
+    "domain": "Subscription",
+    "impact": [
+      "Meal delivery",
+      "Subscription billing",
+      "Subscription",
+      "Billing"
+    ]
+  },
+  "refined_requirement": {
+    "feature_name": "Pause Subscription",
+    "actor": "User",
+    "description": "Users can pause their meal subscription for a fixed period, which affects meal delivery, subscription billing, and billing, and they will receive an in-app notification and a refund for meals.",
+    "business_rules": [
+      {
+        "text": "The user can pause their meal subscription for a fixed period.",
+        "source": "clarification",
+        "source_id": "pause_subscription_duration",
+        "rule_id": "BR1"
+      },
+      {
+        "text": "When a user pauses their subscription, meals are refunded.",
+        "source": "clarification",
+        "source_id": "pause_subscription_policy",
+        "rule_id": "BR2"
+      },
+      {
+        "text": "Pausing a subscription affects subscription billing.",
+        "source": "clarification",
+        "source_id": "pause_subscription_billing",
+        "rule_id": "BR3"
+      },
+      {
+        "text": "The user will receive an in-app notification when they pause their subscription.",
+        "source": "clarification",
+        "source_id": "pause_subscription_notification",
+        "rule_id": "BR4"
+      },
+      {
+        "text": "The pause subscription feature is part of the subscription domain.",
+        "source": "requirement",
+        "source_id": "understanding:domain",
+        "rule_id": "BR5"
+      },
+      {
+        "text": "Pausing a subscription impacts meal delivery, subscription billing, subscription, and billing.",
+        "source": "requirement",
+        "source_id": "understanding:impact",
+        "rule_id": "BR6"
+      }
+    ],
+    "requirement_level": "feature",
+    "domain": "Subscription"
+  },
+  "artifacts": {
+    "epic": null,
+    "features": [],
+    "user_stories": [
+      {
+        "story": "As a User, I want to pause my meal subscription for a fixed period so that I can temporarily stop meal deliveries and receive a refund for meals.",
+        "story_ref": "US1",
+        "acceptance_criteria": [
+          {
+            "text": "The user can pause their meal subscription for a fixed period.",
+            "traces_to": "BR1"
+          },
+          {
+            "text": "Meals are refunded when a user pauses their subscription.",
+            "traces_to": "BR2"
+          },
+          {
+            "text": "Pausing a subscription affects subscription billing.",
+            "traces_to": "BR3"
+          },
+          {
+            "text": "The user receives an in-app notification when they pause their subscription.",
+            "traces_to": "BR4"
+          }
+        ]
+      }
+    ],
+    "user_journey": [],
+    "gap_analysis": [],
+    "bug_report": null
+  },
+  "clarification": {
+    "type": "Feature",
+    "actor": "User",
+    "action": "Pause meal subscription",
+    "domain": "Subscription",
+    "impact": [
+      "Meal delivery",
+      "Subscription billing",
+      "Subscription",
+      "Billing"
+    ],
+    "timing": "",
+    "billing_behavior": "",
+    "pause_subscription_policy": "Meals are refunded",
+    "pause_subscription_duration": "For a fixed period",
+    "pause_subscription_billing": "Yes",
+    "pause_subscription_notification": "In-app notification",
+    "stage2_followup_resolution": "Use the strictest interpretation so answers do not contradict"
+  }
+}

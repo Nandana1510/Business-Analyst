@@ -1,14 +1,24 @@
-import { useCallback, useEffect, useId, useRef, useState } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useRef,
+  useState,
+  type FormEvent,
+  type ReactNode,
+} from 'react'
 import {
   continueEmptyClarification,
   createSession,
   fetchHealth,
   fetchMeta,
   generateRequirement,
+  regenerateWithSelectedGaps,
   resetSession,
   submitClarification,
 } from './api'
 import { ArtifactsPanel } from './components/ArtifactsPanel'
+import { ClarificationsModal } from './components/ClarificationsModal'
 import { SiteFooter } from './components/SiteFooter'
 import { SiteHeader } from './components/SiteHeader'
 import type { ApiMeta, ClarificationQuestion, PipelineState } from './types'
@@ -77,6 +87,7 @@ function ClarificationForm({
   otherLabel,
   busy,
   onSubmit,
+  featureBanner,
 }: {
   stage: number
   questions: ClarificationQuestion[]
@@ -84,6 +95,8 @@ function ClarificationForm({
   otherLabel: string
   busy: boolean
   onSubmit: (answers: Record<string, string>) => void
+  /** Shown above the form when clarifying a specific feature in a multi-feature run. */
+  featureBanner?: { index: number; total: number; label: string } | null
 }) {
   const [selection, setSelection] = useState<Record<string, string>>({})
   const [otherText, setOtherText] = useState<Record<string, string>>({})
@@ -99,7 +112,7 @@ function ClarificationForm({
     setOtherText(initO)
   }, [questions, stage])
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = (e: FormEvent) => {
     e.preventDefault()
     const answers: Record<string, string> = {}
     for (const q of questions) {
@@ -117,7 +130,17 @@ function ClarificationForm({
 
   return (
     <form className="card clarification" onSubmit={handleSubmit}>
-      <h3>Clarification {stage === 2 ? '(stage 2)' : '(stage 1)'}</h3>
+      {featureBanner ? (
+        <h2 className="ba-clarification-feature-heading" id="clarification-feature-scope">
+          Feature {featureBanner.index} of {featureBanner.total}
+          {featureBanner.label.trim()
+            ? `: ${featureBanner.label.trim()}`
+            : null}
+        </h2>
+      ) : null}
+      <h3 id={featureBanner ? 'clarification-stage-heading' : undefined}>
+        Clarification {stage === 2 ? '(stage 2)' : '(stage 1)'}
+      </h3>
       <p className="hint-muted">
         Choose an option for each question. Leave <strong>{PLACEHOLDER}</strong> if you do not want
         to answer that item. Use <strong>{otherLabel}</strong> only when you need a custom answer.
@@ -183,13 +206,15 @@ function ClarificationForm({
 function AppShell({
   subtitle,
   children,
+  headerActions,
 }: {
   subtitle?: string
-  children: React.ReactNode
+  children: ReactNode
+  headerActions?: ReactNode
 }) {
   return (
     <>
-      <SiteHeader subtitle={subtitle} />
+      <SiteHeader subtitle={subtitle} actions={headerActions} />
       <main className="app-main ba-main">
         <div className="app-main-inner">{children}</div>
       </main>
@@ -208,6 +233,7 @@ export default function App() {
   const [acFormat, setAcFormat] = useState('declarative')
   const [busy, setBusy] = useState(false)
   const [apiReachable, setApiReachable] = useState(true)
+  const [clarificationsModalOpen, setClarificationsModalOpen] = useState(false)
   const fileInputId = useId()
   const fileInputRef = useRef<HTMLInputElement>(null)
 
@@ -266,6 +292,7 @@ export default function App() {
             multi_feature_results: null,
             understood: null,
             clarification: null,
+            clarification_log: [],
             needs_continue_empty_clarification: false,
             refined_text: null,
             refined: null,
@@ -334,6 +361,23 @@ export default function App() {
     }
   }
 
+  const runRegenerateWithGaps = async (selectedGapTexts: string[]) => {
+    if (!sessionId) return
+    setBusy(true)
+    try {
+      const next = await regenerateWithSelectedGaps(sessionId, selectedGapTexts)
+      setApiReachable(true)
+      setState(next)
+    } catch (e) {
+      void fetchHealth().then((ok) => setApiReachable(ok))
+      setState((s) =>
+        s ? { ...s, error: e instanceof Error ? e.message : String(e) } : s,
+      )
+    } finally {
+      setBusy(false)
+    }
+  }
+
   const runReset = async () => {
     if (!sessionId) return
     setBusy(true)
@@ -360,11 +404,20 @@ export default function App() {
         <div className="panel-hero">
           <h2>Connect the API</h2>
           <p>
-            Start the FastAPI server from the <code>backend</code> folder (port 8000), ensure the Vite
-            dev proxy is enabled, then retry.
+            This app loads in the browser at <strong>http://localhost:5173</strong>. You need{' '}
+            <strong>both</strong>: the Vite dev server (so <code>/api</code> is proxied to FastAPI) and
+            uvicorn on port <strong>8000</strong>.
           </p>
           <p className="hint-muted">
-            <code className="schema-preview" style={{ maxHeight: 'none', marginTop: 0 }}>
+            From <code>frontend</code>:
+            <br />
+            <code className="schema-preview" style={{ maxHeight: 'none', marginTop: 'var(--s-8)' }}>
+              npm run dev
+            </code>
+            <br />
+            From <code>backend</code> (separate terminal):
+            <br />
+            <code className="schema-preview" style={{ maxHeight: 'none', marginTop: 'var(--s-8)' }}>
               uvicorn api_app:app --reload --port 8000
             </code>
           </p>
@@ -393,8 +446,22 @@ export default function App() {
     (state.multi_feature_results && state.multi_feature_results.length > 0) ||
     (state.refined && state.artifacts)
 
+  const clarLog = state.clarification_log ?? []
+
   return (
-    <AppShell subtitle="Structured requirements → BA artifacts">
+    <>
+      <AppShell
+        subtitle="Structured requirements → BA artifacts"
+        headerActions={
+          <button
+            type="button"
+            className="btn btn-outline ba-header-clar-btn"
+            onClick={() => setClarificationsModalOpen(true)}
+          >
+            View Clarifications
+          </button>
+        }
+      >
       <div className="panel-hero">
         <h2>From rough ideas to testable artifacts</h2>
         <p>
@@ -551,7 +618,17 @@ export default function App() {
               <pre className="ba-pre">{bundle.refined_text}</pre>
             </section>
             <h2 className="ba-section-title ba-generated-heading">Generated artifacts</h2>
-            <ArtifactsPanel artifacts={bundle.artifacts} intakeLevel={bundle.requirement_level} />
+            <ArtifactsPanel
+              artifacts={bundle.artifacts}
+              intakeLevel={bundle.requirement_level}
+              gapRegeneration={{
+                busy,
+                onRegenerate: (texts) => void runRegenerateWithGaps(texts),
+                scopeHint: `Intake unit ${bundle.index} of ${bundle.total}${
+                  bundle.feature_label ? ` — ${bundle.feature_label}` : ''
+                }`,
+              }}
+            />
             {bundle.clarification_context ? (
               <details className="ba-details ba-clarification-block">
                 <summary>Clarification captured (this feature)</summary>
@@ -599,6 +676,15 @@ export default function App() {
             otherLabel={otherLabel}
             busy={busy}
             onSubmit={(a) => void runClarification(a)}
+            featureBanner={
+              state.multi_feature?.active
+                ? {
+                    index: state.multi_feature.feature_index + 1,
+                    total: state.multi_feature.total,
+                    label: state.intake.feature_label ?? '',
+                  }
+                : null
+            }
           />
         ) : null}
 
@@ -619,6 +705,10 @@ export default function App() {
                   ? state.refined.requirement_level
                   : null
               }
+              gapRegeneration={{
+                busy,
+                onRegenerate: (texts) => void runRegenerateWithGaps(texts),
+              }}
             />
           </>
         ) : null}
@@ -631,5 +721,11 @@ export default function App() {
         ) : null}
       </div>
     </AppShell>
+      <ClarificationsModal
+        open={clarificationsModalOpen}
+        onClose={() => setClarificationsModalOpen(false)}
+        log={clarLog}
+      />
+    </>
   )
 }
